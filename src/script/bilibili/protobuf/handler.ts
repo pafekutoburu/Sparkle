@@ -128,7 +128,6 @@ export const handleIpadViewReply: Middleware = (ctx, next) => {
 export const handleIpadViewProgressReply: Middleware = (ctx, next) => {
     const { sponsorBlock, sponsorBlockLegacy } = ctx.argument;
     const message = IpadViewProgressReply.fromBinary(ctx.response.bodyBytes, protobufReadOptions);
-    message.videoGuide = undefined;
     if ((isSponsorBlockEnabled(sponsorBlock) || isSponsorBlockEnabled(sponsorBlockLegacy)) && message.chronos) {
         handleChronos(message.chronos, ctx.request.headers);
     }
@@ -146,7 +145,6 @@ export const handleIpadRelatesFeedReply: Middleware = (ctx, next) => {
 export const handleViewProgressReply: Middleware = (ctx, next) => {
     const { sponsorBlock, sponsorBlockLegacy } = ctx.argument;
     const message = ViewProgressReply.fromBinary(ctx.response.bodyBytes, protobufReadOptions);
-    message.dm = undefined;
     if ((isSponsorBlockEnabled(sponsorBlock) || isSponsorBlockEnabled(sponsorBlockLegacy)) && message.chronos) {
         handleChronos(message.chronos, ctx.request.headers);
     }

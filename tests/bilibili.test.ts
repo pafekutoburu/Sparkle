@@ -8,6 +8,7 @@ import { DmSegMobileReq, DmSegMobileReply } from '../src/proto/bilibili/communit
 import { MainListReply } from '../src/proto/bilibili/main/community/reply/v1/reply';
 import { PopularReply } from '../src/proto/bilibili/app/show/popular/v1/popular';
 import { ViewReply, ViewProgressReply, RelatesFeedReply } from '../src/proto/bilibili/app/view/v1/view';
+import { ViewProgressReply as UniteViewProgressReply } from '../src/proto/bilibili/app/viewunite/v1/view';
 import { categories, parseSettings, parseSegments, segmentMode } from '../src/script/bilibili/sponsor/policy';
 
 const endpoint = 'https://grpc.biliapi.net/bilibili.community.service.dm.v1.DM/DmSegMobile';
@@ -330,6 +331,95 @@ test('compressed Chronos metadata is replaced when native ungzip returns null', 
     assert.ok(out.logs.some(line => line.includes('[Chronos] Replacement selected')));
 });
 
+test('Chronos replacement preserves original danmaku/video-guide data and unknown fields', async () => {
+    for (const [codec, route, field] of [
+        [ViewProgressReply, 'view', 'videoGuide'],
+        [UniteViewProgressReply, 'viewunite', 'dm'],
+    ] as const) {
+        const value = (codec as any).create({
+            [field]: new Uint8Array([0xab, 0, 0xfe]),
+            chronos: { md5: '3a14beddd23328eaddfe9f0eb048d713', file: 'original', sign: 'original' },
+        });
+        UnknownFieldHandler.onRead(codec.typeName, value, 100, 0, new Uint8Array([42]));
+        const out = await execute(
+            'bilibili.protobuf.response',
+            {
+                url: `https://grpc.biliapi.net/bilibili.app.${route}.v1.View/ViewProgress`,
+                method: 'POST',
+                headers: { 'user-agent': 'bili-inter' },
+            },
+            { status: 200, headers: {}, body: frame((codec as any).toBinary(value), true) },
+            new Map(),
+            undefined,
+            '{"sponsorBlock":"bilibili.sponsor","sponsorBlockLegacy":"#","logLevel":2}',
+            { $utils: { ungzip: () => null } }
+        );
+        const decoded = (codec as any).fromBinary(out.result.body.subarray(5));
+        assert.deepEqual(decoded[field], value[field], route);
+        assert.equal(UnknownFieldHandler.list(decoded).length, 1, route);
+        assert.ok(decoded.chronos.file.endsWith('8c3feda2e92bf60e8a7aeade1a231586.zip'), route);
+        assert.ok(
+            out.logs.some(line => line.includes('[Protobuf] Start')),
+            route
+        );
+        assert.ok(
+            out.logs.some(line => /Complete.*elapsed=\d+ms/.test(line)),
+            route
+        );
+    }
+});
+
+test('disabled helpers bypass ViewProgress before decompression even with a stale script match', async () => {
+    for (const route of ['view', 'viewunite']) {
+        let calls = 0;
+        const body = new Uint8Array([1, 0, 0, 0, 99]);
+        const out = await execute(
+            'bilibili.protobuf.response',
+            {
+                url: `https://grpc.biliapi.net/bilibili.app.${route}.v1.View/ViewProgress`,
+                method: 'POST',
+                headers: {},
+            },
+            { status: 200, headers: {}, body },
+            new Map(),
+            undefined,
+            '{"sponsorBlock":"#","sponsorBlockLegacy":"#","logLevel":2}',
+            {
+                $utils: {
+                    ungzip: () => {
+                        calls++;
+                        throw new Error('must not run');
+                    },
+                },
+            }
+        );
+        assert.equal(calls, 0, route);
+        assert.equal(Object.keys(out.result).length, 0, route);
+        assert.ok(
+            out.logs.some(line => line.includes('ViewProgress bypassed')),
+            route
+        );
+    }
+});
+
+test('Protobuf diagnostics report processing errors without serializing the binary body', async () => {
+    const out = await execute(
+        'bilibili.protobuf.response',
+        {
+            url: 'https://grpc.biliapi.net/bilibili.app.show.v1.Popular/Index',
+            method: 'POST',
+            headers: {},
+        },
+        { status: 200, headers: {}, body: frame(new Uint8Array([0])) },
+        new Map(),
+        undefined,
+        '{"logLevel":2}'
+    );
+    assert.equal(Object.keys(out.result).length, 0);
+    assert.ok(out.logs.some(line => line.includes('[Protobuf] Failed')));
+    assert.ok(out.logs.every(line => !line.includes('"body"')));
+});
+
 test('ordinary compressed RPCs bypass failed native gzip without invoking the JS fallback', async () => {
     for (const route of [
         'app.show.v1.Popular/Index',
@@ -608,21 +698,48 @@ test('module defaults restore optional request handling; both helpers have indep
 
 test('legacy module leaves DmView untouched while retaining airborne and other purification routes', () => {
     const module = readFileSync(new URL('../release/surge/module/bilibili.sgmodule', import.meta.url), 'utf8');
-    const patterns = module
-        .split('\n')
-        .filter(line => line.includes('type=http-response'))
-        .map(line => {
-            const pattern = line.match(/pattern=([^,]+),/)!;
-            return { name: line.slice(0, line.indexOf(' = ')), regex: new RegExp(pattern[1]) };
-        });
+    const defaults = Object.fromEntries(
+        module
+            .split('\n')
+            .find(line => line.startsWith('#!arguments='))!
+            .slice('#!arguments='.length)
+            .split(',')
+            .map(pair => [pair.slice(0, pair.indexOf(':')), pair.slice(pair.indexOf(':') + 1)])
+    );
+    const patternsFor = (overrides: Record<string, string> = {}) =>
+        module
+            .replace(/\{\{\{([^}]+)\}\}\}/g, (_, name) => overrides[name] ?? defaults[name])
+            .split('\n')
+            .filter(line => !line.startsWith('#') && line.includes('type=http-response'))
+            .map(line => {
+                const pattern = line.match(/pattern=([^,]+),/)!;
+                return { name: line.slice(0, line.indexOf(' = ')), regex: new RegExp(pattern[1]) };
+            });
+    const patterns = patternsFor();
     for (const host of ['grpc.biliapi.net', 'app.bilibili.com']) {
         const matching = (route: string) =>
             patterns.filter(item => item.regex.test(`https://${host}/bilibili.${route}`));
         assert.equal(matching('community.service.dm.v1.DM/DmView').length, 0);
-        assert.equal(matching('community.service.dm.v1.DM/DmSegMobile')[0]?.name, '{{{空降助手}}}.response');
+        assert.equal(matching('community.service.dm.v1.DM/DmSegMobile')[0]?.name, 'bilibili.sponsor.response');
+        for (const route of ['app.view.v1.View/ViewProgress', 'app.viewunite.v1.View/ViewProgress']) {
+            assert.equal(matching(route).length, 1);
+            assert.equal(matching(route)[0].name, 'bilibili.sponsor.chronos');
+            const url = `https://${host}/bilibili.${route}`;
+            assert.equal(
+                patternsFor({ 空降助手: '#', '空降助手（旧）': '#' }).filter(p => p.regex.test(url)).length,
+                0
+            );
+            assert.equal(
+                patternsFor({ 资料净化: '#' }).filter(p => p.regex.test(url))[0]?.name,
+                'bilibili.sponsor.chronos'
+            );
+            assert.equal(
+                patternsFor({ 空降助手: '#', '空降助手（旧）': 'bilibili.airborne' }).filter(p => p.regex.test(url))[0]
+                    ?.name,
+                'bilibili.airborne.chronos'
+            );
+        }
         for (const route of [
-            'app.view.v1.View/ViewProgress',
-            'app.viewunite.v1.View/ViewProgress',
             'app.show.v1.Popular/Index',
             'app.dynamic.v2.Dynamic/DynAll',
             'main.community.reply.v1.Reply/MainList',
@@ -630,7 +747,7 @@ test('legacy module leaves DmView untouched while retaining airborne and other p
             'app.playurl.v1.PlayURL/PlayView',
         ]) {
             assert.equal(matching(route).length, 1, route);
-            assert.equal(matching(route)[0].name, '{{{资料净化}}}', route);
+            assert.equal(matching(route)[0].name, 'bilibili.protobuf.response', route);
         }
     }
 });
