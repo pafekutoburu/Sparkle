@@ -6,10 +6,13 @@
     "scripts": {
         "build": "tsx build.ts",
         "generate": "buf generate && tsx add-pure-annotations.ts",
-        "jq": "jq -f ./jq/dev/index.jq --indent 4 < ./jq/dev/input.json > ./jq/dev/output.json"
+        "jq": "jq -f ./jq/dev/index.jq --indent 4 < ./jq/dev/input.json > ./jq/dev/output.json",
+        "test": "node --import tsx --test tests/*.test.ts",
+        "check": "tsc --noEmit"
     },
     "dependencies": {
         "@protobuf-ts/plugin": "2.11.1",
+        "@protobufjs/utf8": "1.1.2",
         "fflate": "0.8.3"
     },
     "devDependencies": {

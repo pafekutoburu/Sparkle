@@ -60,7 +60,9 @@ export interface Notification {
     post: (title: string, subtitle: string, body: string, options?: NotificationOptions) => void;
 }
 
-export interface HttpRequest extends Common.HttpRequest {}
+export interface HttpRequest extends Common.HttpRequest {
+    id?: string;
+}
 
 export interface HttpResponse extends Common.HttpResponse {}
 
@@ -78,6 +80,7 @@ export type Done = (result?: HttpRequestDone | HttpResponseDone) => void;
 export interface FetchRequest extends Common.FetchRequest {
     ['binary-mode']?: boolean;
     timeout?: number;
+    policy?: string;
 }
 
 export interface FetchResponse extends Common.FetchResponse {}

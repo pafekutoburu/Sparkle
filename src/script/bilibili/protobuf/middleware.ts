@@ -5,6 +5,7 @@ export interface Argument {
     displayUpList: 'auto' | 'show' | 'hide';
     purifyComment: boolean | number;
     sponsorBlock: boolean | string;
+    sponsorBlockLegacy?: boolean | string;
 }
 
 export type Middleware = DefaultMiddleware<DefaultState, Argument>;

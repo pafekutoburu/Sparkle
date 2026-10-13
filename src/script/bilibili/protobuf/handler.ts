@@ -33,18 +33,19 @@ import { Logger } from '@core/logger';
 import { exit } from '@core/process';
 import { getSkipSegments, SegmentItem } from '@service/sponsor-block.service';
 import { getDevice, toBvid, ungzip } from '@/utils';
+import { protobufReadOptions, protobufWriteOptions } from '@/utils/protobuf';
 import { Middleware } from './middleware';
 
 export const handleDynAllReply: Middleware = (ctx, next) => {
     const { displayUpList } = ctx.argument;
-    const message = DynAllReply.fromBinary(ctx.response.bodyBytes);
+    const message = DynAllReply.fromBinary(ctx.response.bodyBytes, protobufReadOptions);
     message.topicList = undefined;
     if (message.dynamicList) {
         const excludeTypes = [DynamicType.AD, DynamicType.LIVE_RCMD];
         message.dynamicList.list = message.dynamicList.list.filter(item => !excludeTypes.includes(item.cardType));
     }
     handleUpList(message, displayUpList);
-    ctx.response.bodyBytes = DynAllReply.toBinary(message);
+    ctx.response.bodyBytes = DynAllReply.toBinary(message, protobufWriteOptions);
     return next();
 };
 
@@ -66,7 +67,7 @@ function handleUpList(message: DynAllReply, displayUpList: string): void {
 }
 
 export const handlePlayViewUniteReply: Middleware = (ctx, next) => {
-    const message = PlayViewUniteReply.fromBinary(ctx.response.bodyBytes);
+    const message = PlayViewUniteReply.fromBinary(ctx.response.bodyBytes, protobufReadOptions);
     if (message.viewInfo) message.viewInfo.promptBar = undefined;
     if (message.playArcConf?.arcConfs) {
         Object.values(message.playArcConf.arcConfs).forEach(item => {
@@ -77,12 +78,12 @@ export const handlePlayViewUniteReply: Middleware = (ctx, next) => {
             }
         });
     }
-    ctx.response.bodyBytes = PlayViewUniteReply.toBinary(message);
+    ctx.response.bodyBytes = PlayViewUniteReply.toBinary(message, protobufWriteOptions);
     return next();
 };
 
 export const handlePlayViewReply: Middleware = (ctx, next) => {
-    const message = PlayViewReply.fromBinary(ctx.response.bodyBytes);
+    const message = PlayViewReply.fromBinary(ctx.response.bodyBytes, protobufReadOptions);
     const { backgroundPlayConf, castConf } = message.playArc || {};
     [backgroundPlayConf, castConf].forEach(arcConf => {
         if (arcConf && (!arcConf.isSupport || arcConf.disabled)) {
@@ -92,12 +93,12 @@ export const handlePlayViewReply: Middleware = (ctx, next) => {
             arcConf.unsupportScene.length = 0;
         }
     });
-    ctx.response.bodyBytes = PlayViewReply.toBinary(message);
+    ctx.response.bodyBytes = PlayViewReply.toBinary(message, protobufWriteOptions);
     return next();
 };
 
 export const handlePopularReply: Middleware = (ctx, next) => {
-    const message = PopularReply.fromBinary(ctx.response.bodyBytes);
+    const message = PopularReply.fromBinary(ctx.response.bodyBytes, protobufReadOptions);
     const excludeTypes = ['rcmdOneItem', 'smallCoverV5Ad', 'topicList'];
     message.items = message.items.filter(item => {
         if (item.item.oneofKind === 'smallCoverV5') {
@@ -106,12 +107,12 @@ export const handlePopularReply: Middleware = (ctx, next) => {
         }
         return !excludeTypes.includes(item.item.oneofKind as string);
     });
-    ctx.response.bodyBytes = PopularReply.toBinary(message);
+    ctx.response.bodyBytes = PopularReply.toBinary(message, protobufWriteOptions);
     return next();
 };
 
 export const handleIpadViewReply: Middleware = (ctx, next) => {
-    const message = IpadViewReply.fromBinary(ctx.response.bodyBytes);
+    const message = IpadViewReply.fromBinary(ctx.response.bodyBytes, protobufReadOptions);
     message.label = undefined;
     message.cmIpad = undefined;
     message.cmConfig = undefined;
@@ -119,40 +120,40 @@ export const handleIpadViewReply: Middleware = (ctx, next) => {
     message.cms.length = 0;
     message.specialCellNew.length = 0;
     message.relates = message.relates.filter(item => !item.cm.length);
-    ctx.response.bodyBytes = IpadViewReply.toBinary(message);
+    ctx.response.bodyBytes = IpadViewReply.toBinary(message, protobufWriteOptions);
     return next();
 };
 
 export const handleIpadViewProgressReply: Middleware = (ctx, next) => {
-    const { sponsorBlock } = ctx.argument;
-    const message = IpadViewProgressReply.fromBinary(ctx.response.bodyBytes);
+    const { sponsorBlock, sponsorBlockLegacy } = ctx.argument;
+    const message = IpadViewProgressReply.fromBinary(ctx.response.bodyBytes, protobufReadOptions);
     message.videoGuide = undefined;
-    if (isSponsorBlockEnabled(sponsorBlock) && message.chronos) {
+    if ((isSponsorBlockEnabled(sponsorBlock) || isSponsorBlockEnabled(sponsorBlockLegacy)) && message.chronos) {
         handleChronos(message.chronos, ctx.request.headers);
     }
-    ctx.response.bodyBytes = IpadViewProgressReply.toBinary(message);
+    ctx.response.bodyBytes = IpadViewProgressReply.toBinary(message, protobufWriteOptions);
     return next();
 };
 
 export const handleIpadRelatesFeedReply: Middleware = (ctx, next) => {
-    const message = IpadRelatesFeedReply.fromBinary(ctx.response.bodyBytes);
+    const message = IpadRelatesFeedReply.fromBinary(ctx.response.bodyBytes, protobufReadOptions);
     message.list = message.list.filter(item => !item.cm.length);
-    ctx.response.bodyBytes = IpadRelatesFeedReply.toBinary(message);
+    ctx.response.bodyBytes = IpadRelatesFeedReply.toBinary(message, protobufWriteOptions);
     return next();
 };
 
 export const handleViewProgressReply: Middleware = (ctx, next) => {
-    const { sponsorBlock } = ctx.argument;
-    const message = ViewProgressReply.fromBinary(ctx.response.bodyBytes);
+    const { sponsorBlock, sponsorBlockLegacy } = ctx.argument;
+    const message = ViewProgressReply.fromBinary(ctx.response.bodyBytes, protobufReadOptions);
     message.dm = undefined;
-    if (isSponsorBlockEnabled(sponsorBlock) && message.chronos) {
+    if ((isSponsorBlockEnabled(sponsorBlock) || isSponsorBlockEnabled(sponsorBlockLegacy)) && message.chronos) {
         handleChronos(message.chronos, ctx.request.headers);
     }
-    ctx.response.bodyBytes = ViewProgressReply.toBinary(message);
+    ctx.response.bodyBytes = ViewProgressReply.toBinary(message, protobufWriteOptions);
     return next();
 };
 
-function isSponsorBlockEnabled(value: string | boolean): boolean {
+function isSponsorBlockEnabled(value: string | boolean | undefined): boolean {
     return Boolean(value && value !== '#');
 }
 
@@ -196,31 +197,31 @@ function getEdition(headers: Record<string, string>): string {
 }
 
 export const handleRelatesFeedReply: Middleware = (ctx, next) => {
-    const message = RelatesFeedReply.fromBinary(ctx.response.bodyBytes);
+    const message = RelatesFeedReply.fromBinary(ctx.response.bodyBytes, protobufReadOptions);
     message.relates = handleRelateCard(message.relates);
-    ctx.response.bodyBytes = RelatesFeedReply.toBinary(message);
+    ctx.response.bodyBytes = RelatesFeedReply.toBinary(message, protobufWriteOptions);
     return next();
 };
 
 export const handleViewReply: Middleware = (ctx, next) => {
-    const message = ViewReply.fromBinary(ctx.response.bodyBytes);
+    const message = ViewReply.fromBinary(ctx.response.bodyBytes, protobufReadOptions);
     message.cm = undefined;
     if (message.reqUser) message.reqUser.elecPlusBtn = undefined;
     message.tab?.tabModule.forEach(tabModule => {
         if (tabModule.tab.oneofKind !== 'introduction') return;
         tabModule.tab.introduction.modules = handleViewModules(tabModule.tab.introduction.modules);
     });
-    ctx.response.bodyBytes = ViewReply.toBinary(message);
+    ctx.response.bodyBytes = ViewReply.toBinary(message, protobufWriteOptions);
     return next();
 };
 
 export const handleAIRelateAsyncReply: Middleware = (ctx, next) => {
-    const message = AIRelateAsyncReply.fromBinary(ctx.response.bodyBytes);
+    const message = AIRelateAsyncReply.fromBinary(ctx.response.bodyBytes, protobufReadOptions);
     message.cm = undefined;
     if (message.module) {
         message.module.modules = handleViewModules(message.module.modules);
     }
-    ctx.response.bodyBytes = AIRelateAsyncReply.toBinary(message);
+    ctx.response.bodyBytes = AIRelateAsyncReply.toBinary(message, protobufWriteOptions);
     return next();
 };
 
@@ -259,19 +260,19 @@ function handleRelateCard(cards: RelateCard[]): RelateCard[] {
 }
 
 export const handleDmViewReply: Middleware = (ctx, next) => {
-    const message = DmViewReply.fromBinary(ctx.response.bodyBytes);
+    const message = DmViewReply.fromBinary(ctx.response.bodyBytes, protobufReadOptions);
     message.qoe = undefined;
     message.activityMeta.length = 0;
     if (message.command?.commandDms.length) {
         message.command.commandDms.length = 0;
     }
-    ctx.response.bodyBytes = DmViewReply.toBinary(message);
+    ctx.response.bodyBytes = DmViewReply.toBinary(message, protobufWriteOptions);
     return next();
 };
 
 export const handleMainListReply: Middleware = (ctx, next) => {
     const { purifyComment } = ctx.argument;
-    const message = MainListReply.fromBinary(ctx.response.bodyBytes);
+    const message = MainListReply.fromBinary(ctx.response.bodyBytes, protobufReadOptions);
     message.cm = undefined;
     message.mixedCards.length = 0;
     const excludeTypes = [Type.CM, Type.OPERATION];
@@ -289,25 +290,25 @@ export const handleMainListReply: Middleware = (ctx, next) => {
             );
         });
     }
-    ctx.response.bodyBytes = MainListReply.toBinary(message);
+    ctx.response.bodyBytes = MainListReply.toBinary(message, protobufWriteOptions);
     return next();
 };
 
 export const handleIpadPlayViewReply: Middleware = (ctx, next) => {
-    const message = IpadPlayViewReply.fromBinary(ctx.response.bodyBytes);
+    const message = IpadPlayViewReply.fromBinary(ctx.response.bodyBytes, protobufReadOptions);
     if (message.viewInfo) message.viewInfo.tryWatchPromptBar = undefined;
     if (message.playExtConf?.castTips) {
         message.playExtConf.castTips = { code: 0, message: '' };
     }
-    ctx.response.bodyBytes = IpadPlayViewReply.toBinary(message);
+    ctx.response.bodyBytes = IpadPlayViewReply.toBinary(message, protobufWriteOptions);
     return next();
 };
 
 export const handleSearchAllResponse: Middleware = (ctx, next) => {
-    const message = SearchAllResponse.fromBinary(ctx.response.bodyBytes);
+    const message = SearchAllResponse.fromBinary(ctx.response.bodyBytes, protobufReadOptions);
     const excludePattern = /_ad_?/;
     message.item = message.item.filter(item => !excludePattern.test(item.linktype));
-    ctx.response.bodyBytes = SearchAllResponse.toBinary(message);
+    ctx.response.bodyBytes = SearchAllResponse.toBinary(message, protobufWriteOptions);
     return next();
 };
 
@@ -322,7 +323,7 @@ export const handleRequest: Middleware = async (ctx, next) => {
 export const handleDmSegMobileReq: Middleware = async (ctx, next) => {
     const body = ctx.request.bodyBytes;
     const data = body[0] ? ungzip(body.subarray(5)) : body.subarray(5);
-    const message = DmSegMobileReq.fromBinary(data);
+    const message = DmSegMobileReq.fromBinary(data, protobufReadOptions);
     if (message.type !== 1) exit();
     const { pid, oid } = message;
     const videoId = toBvid(pid);
@@ -408,9 +409,9 @@ function parseSegments(body: string): number[][] {
 }
 
 export const handleDmSegMobileReply: Middleware = (ctx, next) => {
-    const message = DmSegMobileReply.fromBinary(ctx.response.bodyBytes);
+    const message = DmSegMobileReply.fromBinary(ctx.response.bodyBytes, protobufReadOptions);
     message.elems.push(...createAirborneDanmaku(ctx.state.segments));
-    ctx.response.bodyBytes = DmSegMobileReply.toBinary(message);
+    ctx.response.bodyBytes = DmSegMobileReply.toBinary(message, protobufWriteOptions);
     return next();
 };
 
