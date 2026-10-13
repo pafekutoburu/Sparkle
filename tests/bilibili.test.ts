@@ -3,11 +3,11 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import vm from 'node:vm';
 import { gunzipSync, gzipSync } from 'node:zlib';
-import { UnknownFieldHandler } from '@protobuf-ts/runtime';
+import { BinaryReader, UnknownFieldHandler } from '@protobuf-ts/runtime';
 import { DmSegMobileReq, DmSegMobileReply } from '../src/proto/bilibili/community/service/dm/v1/dm';
 import { MainListReply } from '../src/proto/bilibili/main/community/reply/v1/reply';
 import { PopularReply } from '../src/proto/bilibili/app/show/popular/v1/popular';
-import { ViewReply, ViewProgressReply, RelatesFeedReply } from '../src/proto/bilibili/app/view/v1/view';
+import { Chronos, ViewReply, ViewProgressReply, RelatesFeedReply } from '../src/proto/bilibili/app/view/v1/view';
 import { ViewProgressReply as UniteViewProgressReply } from '../src/proto/bilibili/app/viewunite/v1/view';
 import { categories, parseSettings, parseSegments, segmentMode } from '../src/script/bilibili/sponsor/policy';
 
@@ -400,6 +400,143 @@ test('disabled helpers bypass ViewProgress before decompression even with a stal
             route
         );
     }
+});
+
+function nonChronosBytes(payload: Uint8Array): Uint8Array {
+    const reader = new BinaryReader(payload);
+    const parts: Uint8Array[] = [];
+    while (reader.pos < reader.len) {
+        const start = reader.pos;
+        const [field, wire] = reader.tag();
+        reader.skip(wire);
+        if (field !== 2) parts.push(payload.subarray(start, reader.pos));
+    }
+    return new Uint8Array(Buffer.concat(parts));
+}
+
+test('dedicated WebView Chronos script preserves all unrelated wire bytes and nested unknown fields', async () => {
+    for (const [codec, route, field] of [
+        [ViewProgressReply, 'view', 'videoGuide'],
+        [UniteViewProgressReply, 'viewunite', 'dm'],
+    ] as const) {
+        const value = (codec as any).create({
+            [field]: new Uint8Array([0xab, 0, 0xfe]),
+            chronos: { md5: '3a14beddd23328eaddfe9f0eb048d713', file: 'original', sign: 'original' },
+        });
+        UnknownFieldHandler.onRead(Chronos.typeName, value.chronos, 100, 0, new Uint8Array([42]));
+        const encoded = (codec as any).toBinary(value);
+        const payload = new Uint8Array(encoded.length + 3);
+        payload.set([0xa0, 0x06, 42]); // unknown field before the known fields
+        payload.set(encoded, 3);
+        const out = await execute(
+            'bilibili.chronos',
+            {
+                url: `https://grpc.biliapi.net/bilibili.app.${route}.v1.View/ViewProgress`,
+                method: 'POST',
+                headers: { 'user-agent': 'bili-inter', te: 'trailers' },
+            },
+            { status: 200, headers: { 'content-type': 'application/grpc' }, body: frame(payload, true) },
+            new Map(),
+            undefined,
+            '{"sponsorBlock":"bilibili.sponsor","sponsorBlockLegacy":"#","logLevel":2}',
+            { TextEncoder, TextDecoder, $utils: { ungzip: () => null } }
+        );
+        const result = out.result.body.subarray(5);
+        assert.deepEqual(nonChronosBytes(result), nonChronosBytes(payload), route);
+        const decoded = (codec as any).fromBinary(result);
+        assert.deepEqual(decoded[field], value[field], route);
+        assert.equal(UnknownFieldHandler.list(decoded).length, 1, route);
+        assert.equal(UnknownFieldHandler.list(decoded.chronos).length, 1, route);
+        assert.equal(decoded.chronos.md5, '8c3feda2e92bf60e8a7aeade1a231586');
+        assert.equal(decoded.chronos.sign, undefined);
+        assert.equal(out.result.headers['grpc-status'], '0');
+        assert.equal(out.calls, 0);
+        assert.ok(out.logs.some(line => line.includes('engine=webview')));
+    }
+});
+
+test('dedicated Chronos preserves originals on disabled helpers, missing resource and corrupt framing', async () => {
+    for (const scenario of ['disabled', 'missing', 'frame', 'crc', 'grpc']) {
+        let body = frame(
+            ViewProgressReply.toBinary(
+                ViewProgressReply.create({
+                    chronos: { md5: '3a14beddd23328eaddfe9f0eb048d713', file: 'original' },
+                })
+            ),
+            true
+        );
+        if (scenario === 'frame') body = new Uint8Array([0, 0, 0, 0, 9]);
+        if (scenario === 'crc') body[body.length - 8] ^= 1;
+        if (scenario === 'missing') body = frame(ViewProgressReply.toBinary(ViewProgressReply.create()));
+        const snapshot = body.slice();
+        const out = await execute(
+            'bilibili.chronos',
+            {
+                url: 'https://grpc.biliapi.net/bilibili.app.view.v1.View/ViewProgress',
+                method: 'POST',
+                headers: {},
+            },
+            { status: 200, headers: {}, body, h2_trailers: scenario === 'grpc' ? { 'grpc-status': '14' } : undefined },
+            new Map(),
+            undefined,
+            scenario === 'disabled' ? '{"sponsorBlock":"#","sponsorBlockLegacy":"#"}' : '{}',
+            { TextEncoder, TextDecoder }
+        );
+        assert.equal(Object.keys(out.result).length, 0, scenario);
+        assert.deepEqual(body, snapshot, scenario);
+        assert.equal(out.calls, 0, scenario);
+    }
+});
+
+test('dedicated Chronos keeps upstream resource fallback and legacy-only enabling', async () => {
+    for (const [ua, suffix] of [
+        ['bili-inter', '8c3feda2e92bf60e8a7aeade1a231586'],
+        ['bili-hd', 'e5a968f1a5055bbe5c12e67b100a6dcb'],
+        ['other', '106d21a147f49e9d4ef86e2e8523474f'],
+    ]) {
+        const out = await execute(
+            'bilibili.chronos',
+            {
+                url: 'https://grpc.biliapi.net/bilibili.app.view.v1.View/ViewProgress',
+                method: 'POST',
+                headers: { 'user-agent': ua },
+            },
+            {
+                status: 200,
+                headers: {},
+                body: frame(
+                    ViewProgressReply.toBinary(
+                        ViewProgressReply.create({
+                            chronos: { md5: 'unknown', file: 'original' },
+                        })
+                    )
+                ),
+            },
+            new Map(),
+            undefined,
+            '{"sponsorBlock":"#","sponsorBlockLegacy":"bilibili.airborne"}',
+            { TextEncoder, TextDecoder }
+        );
+        const decoded = ViewProgressReply.fromBinary(out.result.body.subarray(5));
+        assert.equal(decoded.chronos?.md5, suffix);
+    }
+});
+
+test('Chronos module uses a dedicated WebView bundle without changing the ordinary JSC path', () => {
+    const module = readFileSync(new URL('../release/surge/module/bilibili.sgmodule', import.meta.url), 'utf8');
+    const lines = module.split('\n').filter(line => line.includes('.chronos = type=http-response'));
+    assert.equal(lines.length, 2);
+    for (const line of lines) {
+        assert.ok(line.includes('engine=webview'));
+        assert.ok(line.includes('dist/bilibili.chronos.js?v=7'));
+        assert.ok(!line.includes('bilibili.protobuf.response.js'));
+    }
+    const ordinary = module.split('\n').find(line => line.startsWith('{{{资料净化}}} ='))!;
+    assert.ok(ordinary.includes('engine=jsc'));
+    assert.ok(ordinary.includes('dist/bilibili.protobuf.response.js?v=6'));
+    const bundle = source('bilibili.chronos');
+    assert.ok(!bundle.includes('bilibili.main.community.reply.v1.MainListReply'));
+    assert.ok(!bundle.includes('bilibili.community.service.dm.v1.DanmakuElem'));
 });
 
 test('Protobuf diagnostics report processing errors without serializing the binary body', async () => {
