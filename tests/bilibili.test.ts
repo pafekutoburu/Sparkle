@@ -42,6 +42,7 @@ async function execute(
 ) {
     let calls = 0;
     let doneCalls = 0;
+    const logs: string[] = [];
     const result = await new Promise<any>((resolve, reject) => {
         const context = vm.createContext({
             Uint8Array,
@@ -72,7 +73,7 @@ async function execute(
                     else callback(null, { status: 404 }, '');
                 },
             },
-            console: { log() {} },
+            console: { log: (...values: unknown[]) => logs.push(values.join(' ')) },
             $done: (value: unknown) => {
                 doneCalls++;
                 resolve(value);
@@ -87,7 +88,7 @@ async function execute(
     });
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(doneCalls, 1);
-    return { result, calls, store };
+    return { result, calls, store, logs };
 }
 
 async function prepare(store: Map<string, string>, id = 'request-1', cid = '279786', index = '1') {
@@ -239,6 +240,83 @@ test('timeouts, invalid JSON, gRPC errors and missing correlation preserve the o
         assert.deepEqual(body, snapshot, scenario);
         if (['grpc', 'missing', 'framing'].includes(scenario)) assert.equal(out.calls, 0);
     }
+});
+
+test('diagnostics identify missing correlation and respect ERROR/OFF without changing pass-through', async () => {
+    for (const [argument, count] of [
+        ['{}', 1],
+        ['{"logLevel":5}', 0],
+    ]) {
+        const output = await execute('bilibili.sponsor.response', {}, undefined, new Map(), undefined, argument);
+        assert.equal(output.logs.length, count);
+        assert.equal(Object.keys(output.result).length, 0);
+        assert.equal(output.calls, 0);
+        if (count) assert.match(output.logs[0], /Response request ID unavailable/);
+    }
+    const unpaired = await execute(
+        'bilibili.sponsor.response',
+        { id: 'unpaired' },
+        { status: 200, headers: {}, body: originalReply() }
+    );
+    assert.match(unpaired.logs[0], /No paired request metadata/);
+    assert.equal(unpaired.calls, 0);
+});
+
+test('the reported video maps its large aid to the correct BV and injects the recorded sponsor in chunk two', async () => {
+    // Public API snapshot taken during diagnosis; no live service dependency.
+    const store = new Map<string, string>();
+    const request = await execute(
+        'bilibili.sponsor.request',
+        {
+            id: 'reported-video',
+            body: frame(
+                DmSegMobileReq.toBinary(
+                    DmSegMobileReq.create({
+                        pid: '117375802278173',
+                        oid: '42421586533',
+                        type: 1,
+                        segmentIndex: '2',
+                    })
+                )
+            ),
+        },
+        undefined,
+        store,
+        undefined,
+        '{"logLevel":2}'
+    );
+    assert.match(request.logs[0], /BV14GHY6fExG cid=42421586533 chunk=2/);
+    const output = await execute(
+        'bilibili.sponsor.response',
+        { id: 'reported-video' },
+        { status: 200, headers: {}, body: originalReply() },
+        store,
+        (options, cb) => {
+            assert.ok(String(options.url).includes('videoID=BV14GHY6fExG&cid=42421586533'));
+            cb(
+                null,
+                { status: 200 },
+                JSON.stringify([
+                    {
+                        UUID: 'reported-sponsor',
+                        cid: '42421586533',
+                        category: 'sponsor',
+                        actionType: 'skip',
+                        segment: [433.8, 501.098],
+                    },
+                ])
+            );
+        },
+        '{"logLevel":2}'
+    );
+    const decoded = DmSegMobileReply.fromBinary(output.result.body.subarray(5));
+    const marker = decoded.elems.find(item => item.content === '空指部已就位');
+    assert.equal(marker?.progress, 433800);
+    assert.equal(marker?.action, 'airborne:501098');
+    assert.ok(output.logs.some(line => /Response matched/.test(line)));
+    assert.ok(output.logs.some(line => /1 valid segments/.test(line)));
+    assert.ok(output.logs.some(line => /Injecting 2 hints for chunk 2/.test(line)));
+    assert.equal(request.calls, 0);
 });
 
 test('404 results are negatively cached; compressed frames work; later six-minute chunks do not duplicate hints', async () => {

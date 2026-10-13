@@ -17,6 +17,18 @@ interface Store {
 }
 const STORE_KEY = 'sparkle.sponsor.v1';
 
+export function log(level: number, message: string): void {
+    let threshold = 4;
+    try {
+        const argument = typeof $argument === 'string' ? JSON.parse($argument) : {};
+        const configured = Number(argument.logLevel ?? 4);
+        if (configured >= 1 && configured <= 5) threshold = configured;
+    } catch {
+        /* Keep errors visible when the argument itself is malformed. */
+    }
+    if (level >= threshold && threshold < 5) console.log(`[SponsorBlock] ${message}`);
+}
+
 export function readStore(): Store {
     const raw = $persistentStore.read(STORE_KEY);
     let store: Store;

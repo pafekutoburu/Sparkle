@@ -1,6 +1,6 @@
 # Sparkle — legacy Bilibili compatibility fork
 
-This GPL-3.0 fork of [kokoryh/Sparkle](https://github.com/kokoryh/Sparkle) targets selective loading delays in the white-icon iOS Bilibili international app v3.20.1 with Surge. The fork adds a SponsorBlock integration informed by [PiliPlus](https://github.com/bggRGjQaUbCoE/PiliPlus). Device behaviour has not yet been verified on an iPhone; local integration tests are not a substitute for that check.
+This GPL-3.0 fork of [kokoryh/Sparkle](https://github.com/kokoryh/Sparkle) targets selective loading delays in the white-icon iOS Bilibili international app v3.20.1 with Surge. The fork adds a SponsorBlock integration informed by [PiliPlus](https://github.com/bggRGjQaUbCoE/PiliPlus). The user confirmed normal content loading with this fork on an iPhone. SponsorBlock triggering is still under investigation; local integration tests are not a substitute for that check.
 
 ## Install in Surge
 
@@ -28,6 +28,12 @@ Point highlights can be set to `manual` for a clickable jump. `mute` and `full` 
 ## Explicitly not ported
 
 PiliPlus's Flutter player UI, coloured native progress bar, once-per-playback skipping, native skip controls independent of danmaku, volume muting, voting/category changes, segment submission, user statistics/identity management, tracking uploads, offline integration and YouTube port-video binding are not implemented. The module provides the agreed category/hint/skip subset, not the complete PiliPlus feature set.
+
+## Diagnose missing hints
+
+Update the module and set `日志等级` to `2` (INFO). Keep the new helper enabled, the old helper disabled and `资料净化` enabled. Restart the app with danmaku visible. The `bilibili.sponsor.request` and `.response` script logs report metadata recording, response matching, segment-service status/cache hits and hint injection. Errors distinguish missing request IDs, missing paired metadata, invalid frames and service failures. Logging does not include request headers or cookies; return the level to `4` after diagnosis.
+
+For the reported `BV14GHY6fExG`, the public segment service returned a sponsor range at 433.8–501.098 seconds during investigation. Test from 7:10 through 7:16 rather than only the beginning of this video: hints are emitted at the segment start in the second six-minute danmaku chunk. Service data can change. If injection is logged but no hint appears, investigate danmaku rendering and the Chronos resource next. These diagnostics do not establish that the iPhone triggering issue is fixed.
 
 ## Build and verify
 
