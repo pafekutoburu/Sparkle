@@ -13,6 +13,7 @@ import { categories, parseSettings, parseSegments, segmentMode } from '../src/sc
 
 const endpoint = 'https://grpc.biliapi.net/bilibili.community.service.dm.v1.DM/DmSegMobile';
 const source = (name: string) => readFileSync(new URL(`../dist/${name}.js`, import.meta.url), 'utf8');
+const payloadFromFrame = (body: Uint8Array) => body[0] ? new Uint8Array(gunzipSync(body.subarray(5))) : body.subarray(5);
 function frame(body: Uint8Array, compressed = false): Uint8Array {
     const payload = compressed ? gzipSync(body) : body;
     const out = new Uint8Array(payload.length + 5);
@@ -441,7 +442,7 @@ test('dedicated WebView Chronos script preserves all unrelated wire bytes and ne
             '{"sponsorBlock":"bilibili.sponsor","sponsorBlockLegacy":"#","logLevel":2}',
             { TextEncoder, TextDecoder, $utils: { ungzip: () => null } }
         );
-        const result = out.result.body.subarray(5);
+        const result = payloadFromFrame(out.result.body);
         assert.deepEqual(nonChronosBytes(result), nonChronosBytes(payload), route);
         const decoded = (codec as any).fromBinary(result);
         assert.deepEqual(decoded[field], value[field], route);
@@ -449,7 +450,8 @@ test('dedicated WebView Chronos script preserves all unrelated wire bytes and ne
         assert.equal(UnknownFieldHandler.list(decoded.chronos).length, 1, route);
         assert.equal(decoded.chronos.md5, '8c3feda2e92bf60e8a7aeade1a231586');
         assert.equal(decoded.chronos.sign, undefined);
-        assert.equal(out.result.headers['grpc-status'], '0');
+        assert.equal(out.result.body[0], 1);
+        assert.equal(out.result.headers, undefined);
         assert.equal(out.calls, 0);
         assert.ok(out.logs.some(line => line.includes('engine=webview')));
     }
@@ -552,7 +554,7 @@ test('resource replacement can be bypassed without disabling the helper or chang
     }
 });
 
-test('transport diagnostic retains the original resource while exercising the same frame/header rewrite', async () => {
+test('transport diagnostic retains the original resource and compression without fabricating completion headers', async () => {
     for (const [codec, route] of [[ViewProgressReply, 'view'], [UniteViewProgressReply, 'viewunite']] as const) {
         const original = codec.create({
             chronos: { md5: '3a14beddd23328eaddfe9f0eb048d713', file: 'https://original.example/resource.zip', sign: 'original-sign' },
@@ -569,14 +571,48 @@ test('transport diagnostic retains the original resource while exercising the sa
                 '{"sponsorBlock":"bilibili.sponsor","chronosEnabled":"2","logLevel":2}',
                 { TextEncoder, TextDecoder, $utils: { ungzip: () => null } }
             );
-            assert.equal(out.result.body[0], 0);
+            assert.equal(out.result.body[0], 1);
             assert.equal(new DataView(out.result.body.buffer).getUint32(1), out.result.body.length - 5);
-            assert.deepEqual(codec.fromBinary(out.result.body.subarray(5)).chronos, original.chronos);
-            assert.deepEqual(nonChronosBytes(out.result.body.subarray(5)), nonChronosBytes(payload));
-            assert.equal(out.result.headers?.['grpc-status'], trailers ? undefined : '0');
+            assert.deepEqual(codec.fromBinary(payloadFromFrame(out.result.body)).chronos, original.chronos);
+            assert.deepEqual(nonChronosBytes(payloadFromFrame(out.result.body)), nonChronosBytes(payload));
+            assert.equal(out.result.headers, undefined);
+            assert.equal(out.result.h2_trailers, undefined);
             assert.equal(out.calls, 0);
             assert.ok(out.logs.some(line => line.includes('original resource retained')));
             assert.ok(!out.logs.some(line => line.includes('Replacement selected')));
+        }
+    }
+});
+
+test('replacement preserves compressed/uncompressed framing and leaves response completion metadata untouched', async () => {
+    for (const compressed of [false, true]) {
+        for (const grpcStatus of [undefined, '0']) {
+            const input = frame(ViewProgressReply.toBinary(ViewProgressReply.create({
+                chronos: { md5: '3a14beddd23328eaddfe9f0eb048d713', file: 'original', sign: 'original' },
+            })), compressed);
+            const snapshot = input.slice();
+            const headers = {
+                'content-type': 'application/grpc', 'grpc-encoding': 'gzip',
+                ...(grpcStatus ? { 'grpc-status': grpcStatus } : {}),
+            };
+            const headerSnapshot = { ...headers };
+            const trailers = grpcStatus ? { 'grpc-status': '0', 'trace-bin': 'original-trailer' } : undefined;
+            const out = await execute(
+                'bilibili.chronos',
+                { headers: { te: 'trailers', 'user-agent': 'bili-inter' } },
+                { status: 200, headers, h2_trailers: trailers, body: input },
+                new Map(), undefined, '{"logLevel":2}', { TextEncoder, TextDecoder }
+            );
+            assert.deepEqual(Object.keys(out.result), ['body']);
+            assert.equal(out.result.body[0], Number(compressed));
+            assert.equal(new DataView(out.result.body.buffer).getUint32(1), out.result.body.length - 5);
+            const decoded = ViewProgressReply.fromBinary(payloadFromFrame(out.result.body));
+            assert.equal(decoded.chronos?.md5, '8c3feda2e92bf60e8a7aeade1a231586');
+            assert.equal(decoded.chronos?.sign, undefined);
+            assert.deepEqual(input, snapshot);
+            assert.deepEqual(headers, headerSnapshot);
+            assert.equal(trailers?.['trace-bin'], grpcStatus ? 'original-trailer' : undefined);
+            assert.ok(out.logs.some(line => line.includes('grpc-status not synthesized')));
         }
     }
 });
@@ -587,7 +623,7 @@ test('Chronos module uses a dedicated WebView bundle without changing the ordina
     assert.equal(lines.length, 2);
     for (const line of lines) {
         assert.ok(line.includes('engine=webview'));
-        assert.ok(line.includes('dist/bilibili.chronos.js?v=9'));
+        assert.ok(line.includes('dist/bilibili.chronos.js?v=10'));
         assert.ok(line.includes('"chronosEnabled":"{{{空降资源替换}}}"'));
         assert.ok(!line.includes('bilibili.protobuf.response.js'));
     }

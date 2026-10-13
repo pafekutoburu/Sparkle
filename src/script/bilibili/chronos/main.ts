@@ -75,23 +75,24 @@ function run(): Surge.HttpResponseDone {
     }
     if (!changed) return {};
     const length = parts.reduce((sum, part) => sum + part.length, 0);
-    const body = new Uint8Array(length + 5);
-    new DataView(body.buffer).setUint32(1, length);
-    let offset = 5;
+    const rewritten = new Uint8Array(length);
+    let offset = 0;
     for (const part of parts) {
-        body.set(part, offset);
+        rewritten.set(part, offset);
         offset += part.length;
     }
-    // Preserve the existing response script's successful gRPC completion rule.
-    if (
-        response.h2_trailers === undefined &&
-        request.headers.te === 'trailers' &&
-        !Object.hasOwn(response.headers, 'grpc-status')
-    ) {
-        Logger.info('[Chronos] Transport output: identity frame; grpc-status header added.');
-        return { body, headers: { ...response.headers, 'grpc-status': '0' } };
+    let encoded: Uint8Array = rewritten;
+    if (frame[0] === 1) {
+        const { gzip } = require('./gzip-output') as typeof import('./gzip-output');
+        encoded = gzip(rewritten);
     }
-    Logger.info('[Chronos] Transport output: identity frame; original headers retained.');
+    const body = new Uint8Array(encoded.length + 5);
+    body[0] = frame[0];
+    new DataView(body.buffer).setUint32(1, encoded.length);
+    body.set(encoded, 5);
+    // Leave HTTP headers and the original HTTP/2 completion metadata to Surge.
+    // An absent scripting trailer field does not establish a missing trailer.
+    Logger.info(`[Chronos] Transport output: compressed=${body[0]}; original headers retained; grpc-status not synthesized.`);
     return { body };
 }
 
