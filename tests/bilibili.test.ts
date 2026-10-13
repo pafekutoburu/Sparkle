@@ -330,6 +330,68 @@ test('compressed Chronos metadata is replaced when native ungzip returns null', 
     assert.ok(out.logs.some(line => line.includes('[Chronos] Replacement selected')));
 });
 
+test('ordinary compressed RPCs bypass failed native gzip without invoking the JS fallback', async () => {
+    for (const route of [
+        'app.show.v1.Popular/Index',
+        'app.dynamic.v2.Dynamic/DynAll',
+        'main.community.reply.v1.Reply/MainList',
+        'app.view.v1.View/View',
+        'app.viewunite.v1.View/View',
+        'app.playurl.v1.PlayURL/PlayView',
+        'app.playerunite.v1.Player/PlayViewUnite',
+    ]) {
+        // Valid gzip holding invalid protobuf must be untouched: decoding it
+        // via the fallback would fail, producing an error instead of a bypass.
+        const body = frame(new Uint8Array([0]), true);
+        const snapshot = body.slice();
+        let nativeCalls = 0;
+        const out = await execute(
+            'bilibili.protobuf.response',
+            {
+                url: `https://grpc.biliapi.net/bilibili.${route}`,
+                method: 'POST',
+                headers: {},
+            },
+            { status: 200, headers: {}, body },
+            new Map(),
+            undefined,
+            '{"logLevel":2}',
+            {
+                $utils: {
+                    ungzip: (payload: Uint8Array) => {
+                        nativeCalls++;
+                        assert.equal(payload.byteOffset, 5, route);
+                        return null;
+                    },
+                },
+            }
+        );
+        assert.equal(nativeCalls, 1, route);
+        assert.equal(Object.keys(out.result).length, 0, route);
+        assert.deepEqual(body, snapshot, route);
+        assert.equal(out.calls, 0, route);
+        assert.ok(!out.logs.some(line => line.includes('[ERROR]')), route);
+    }
+});
+
+test('ordinary compressed RPC purification remains available when native gzip succeeds', async () => {
+    const value = MainListReply.create({
+        topReplies: [{ content: { message: '保留中文🙂', urls: {} } }, { content: { message: '淘宝广告', urls: {} } }],
+    });
+    const out = await execute(
+        'bilibili.protobuf.response',
+        {
+            url: 'https://grpc.biliapi.net/bilibili.main.community.reply.v1.Reply/MainList',
+            method: 'POST',
+            headers: {},
+        },
+        { status: 200, headers: {}, body: frame(MainListReply.toBinary(value), true) }
+    );
+    const decoded = MainListReply.fromBinary(out.result.body.subarray(5));
+    assert.equal(decoded.topReplies.length, 1);
+    assert.equal(decoded.topReplies[0].content?.message, '保留中文🙂');
+});
+
 test('corrupt gzip and oversized decoded bodies pass through before any segment lookup', async () => {
     for (const problem of ['crc', 'size', 'too-small', 'truncated']) {
         const store = new Map<string, string>();

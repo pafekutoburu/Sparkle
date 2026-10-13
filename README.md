@@ -1,6 +1,6 @@
 # Sparkle — legacy Bilibili compatibility fork
 
-This GPL-3.0 fork of [kokoryh/Sparkle](https://github.com/kokoryh/Sparkle) targets selective loading delays in the white-icon iOS Bilibili international app v3.20.1 with Surge. The fork adds a SponsorBlock integration informed by [PiliPlus](https://github.com/bggRGjQaUbCoE/PiliPlus). The user confirmed normal content loading with this fork on an iPhone. SponsorBlock triggering is still under investigation; local integration tests are not a substitute for that check.
+This GPL-3.0 fork of [kokoryh/Sparkle](https://github.com/kokoryh/Sparkle) targets selective loading delays in the white-icon iOS Bilibili international app v3.20.1 with Surge. The fork adds a SponsorBlock integration informed by [PiliPlus](https://github.com/bggRGjQaUbCoE/PiliPlus). The user confirmed automatic SponsorBlock skipping and undo on an iPhone, but reported a loading regression after broad gzip fallback was added. Fallback is now restricted to airborne and Chronos responses, with device loading verification pending. Local integration tests are not a substitute for that check.
 
 ## Install in Surge
 
@@ -16,7 +16,7 @@ The new helper depends on `资料净化` replacing the Chronos player resource, 
 - Keep existing Protobuf purification, using JSC with a portable UTF-8 codec instead of requiring WebView's URL/TextEncoder/TextDecoder APIs on this path. Response bodies above 1 MiB bypass scripting rather than allocating an unbounded body in the network extension.
 - Add a separate `资料净化` switch for isolating the remaining Protobuf processing if device latency persists. Switching it off also turns off the Chronos replacement required for automatic/clickable skipping; JSON processing and static rules remain available.
 - Preserve the previous helper under `空降助手（旧）`. Its sponsor-only filtering, eight-second minimum and request-replay implementation remain available.
-- New helper records request metadata without a network call, lets Bilibili complete its own danmaku request, then queries only the third-party segment API. Compressed payloads use an independent byte buffer with a bounded portable gzip fallback when native decompression fails. It caches successes for five minutes, missing data for one minute, caps its cache, validates CID/timestamps, and preserves the original response on missing metadata, malformed data or service errors.
+- New helper records request metadata without a network call, lets Bilibili complete its own danmaku request, then queries only the third-party segment API. Danmaku and Chronos payloads use an independent byte buffer with a bounded portable gzip fallback when native decompression fails. Ordinary feed, detail, comment and playback RPCs keep native-only decompression: if it fails, purification is skipped and the original response is passed through. This avoids applying portable decompression to every large response. It caches successes for five minutes, missing data for one minute, caps its cache, validates CID/timestamps, and preserves the original response on missing metadata, malformed data or service errors.
 - The Surge module's Sparkle script URLs point to this fork. Existing third-party skin and Chronos resources remain upstream dependencies.
 
 ## New helper settings
