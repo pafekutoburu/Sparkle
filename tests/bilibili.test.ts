@@ -552,13 +552,42 @@ test('resource replacement can be bypassed without disabling the helper or chang
     }
 });
 
+test('transport diagnostic retains the original resource while exercising the same frame/header rewrite', async () => {
+    for (const [codec, route] of [[ViewProgressReply, 'view'], [UniteViewProgressReply, 'viewunite']] as const) {
+        const original = codec.create({
+            chronos: { md5: '3a14beddd23328eaddfe9f0eb048d713', file: 'https://original.example/resource.zip', sign: 'original-sign' },
+        });
+        UnknownFieldHandler.onRead(Chronos.typeName, original.chronos!, 100, 0, new Uint8Array([42]));
+        const payload = codec.toBinary(original);
+        for (const trailers of [undefined, { 'grpc-status': '0' }]) {
+            const out = await execute(
+                'bilibili.chronos',
+                { url: `https://grpc.biliapi.net/bilibili.app.${route}.v1.View/ViewProgress`, headers: { te: 'trailers' } },
+                { status: 200, headers: { 'content-type': 'application/grpc' }, h2_trailers: trailers, body: frame(payload, true) },
+                new Map(),
+                undefined,
+                '{"sponsorBlock":"bilibili.sponsor","chronosEnabled":"2","logLevel":2}',
+                { TextEncoder, TextDecoder, $utils: { ungzip: () => null } }
+            );
+            assert.equal(out.result.body[0], 0);
+            assert.equal(new DataView(out.result.body.buffer).getUint32(1), out.result.body.length - 5);
+            assert.deepEqual(codec.fromBinary(out.result.body.subarray(5)).chronos, original.chronos);
+            assert.deepEqual(nonChronosBytes(out.result.body.subarray(5)), nonChronosBytes(payload));
+            assert.equal(out.result.headers?.['grpc-status'], trailers ? undefined : '0');
+            assert.equal(out.calls, 0);
+            assert.ok(out.logs.some(line => line.includes('original resource retained')));
+            assert.ok(!out.logs.some(line => line.includes('Replacement selected')));
+        }
+    }
+});
+
 test('Chronos module uses a dedicated WebView bundle without changing the ordinary JSC path', () => {
     const module = readFileSync(new URL('../release/surge/module/bilibili.sgmodule', import.meta.url), 'utf8');
     const lines = module.split('\n').filter(line => line.includes('.chronos = type=http-response'));
     assert.equal(lines.length, 2);
     for (const line of lines) {
         assert.ok(line.includes('engine=webview'));
-        assert.ok(line.includes('dist/bilibili.chronos.js?v=8'));
+        assert.ok(line.includes('dist/bilibili.chronos.js?v=9'));
         assert.ok(line.includes('"chronosEnabled":"{{{空降资源替换}}}"'));
         assert.ok(!line.includes('bilibili.protobuf.response.js'));
     }
