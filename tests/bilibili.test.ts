@@ -606,6 +606,35 @@ test('module defaults restore optional request handling; both helpers have indep
     for (const variable of module.matchAll(/\{\{\{([^}]+)\}\}\}/g)) assert.ok(names.has(variable[1]), variable[1]);
 });
 
+test('legacy module leaves DmView untouched while retaining airborne and other purification routes', () => {
+    const module = readFileSync(new URL('../release/surge/module/bilibili.sgmodule', import.meta.url), 'utf8');
+    const patterns = module
+        .split('\n')
+        .filter(line => line.includes('type=http-response'))
+        .map(line => {
+            const pattern = line.match(/pattern=([^,]+),/)!;
+            return { name: line.slice(0, line.indexOf(' = ')), regex: new RegExp(pattern[1]) };
+        });
+    for (const host of ['grpc.biliapi.net', 'app.bilibili.com']) {
+        const matching = (route: string) =>
+            patterns.filter(item => item.regex.test(`https://${host}/bilibili.${route}`));
+        assert.equal(matching('community.service.dm.v1.DM/DmView').length, 0);
+        assert.equal(matching('community.service.dm.v1.DM/DmSegMobile')[0]?.name, '{{{空降助手}}}.response');
+        for (const route of [
+            'app.view.v1.View/ViewProgress',
+            'app.viewunite.v1.View/ViewProgress',
+            'app.show.v1.Popular/Index',
+            'app.dynamic.v2.Dynamic/DynAll',
+            'main.community.reply.v1.Reply/MainList',
+            'app.view.v1.View/View',
+            'app.playurl.v1.PlayURL/PlayView',
+        ]) {
+            assert.equal(matching(route).length, 1, route);
+            assert.equal(matching(route)[0].name, '{{{资料净化}}}', route);
+        }
+    }
+});
+
 test('overlapping automatic ranges seek beyond their union; manual highlights remain point jumps', async () => {
     const store = new Map<string, string>();
     await prepare(store);
