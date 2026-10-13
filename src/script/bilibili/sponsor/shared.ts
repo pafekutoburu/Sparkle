@@ -1,5 +1,6 @@
 import { DanmakuElem, DmColorfulType } from '@proto/bilibili/community/service/dm/v1/dm';
 import { Segment, Settings, categories, segmentMode } from './policy';
+import { ungzip } from '@/utils/gzip';
 
 export interface Metadata {
     bvid: string;
@@ -54,7 +55,7 @@ export function unpackFrame(body: Uint8Array): Uint8Array {
     if (!(body instanceof Uint8Array) || body.length < 5) throw new Error('Missing gRPC frame');
     const length = new DataView(body.buffer, body.byteOffset, body.byteLength).getUint32(1);
     if (length !== body.length - 5 || body[0] > 1) throw new Error('Unsupported gRPC framing');
-    return body[0] === 1 ? $utils.ungzip(body.subarray(5)) : body.subarray(5);
+    return body[0] === 1 ? ungzip(body.subarray(5)) : body.subarray(5);
 }
 
 export function packFrame(body: Uint8Array): Uint8Array {

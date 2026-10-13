@@ -32,7 +32,8 @@ import { Context } from '@core/context';
 import { Logger } from '@core/logger';
 import { exit } from '@core/process';
 import { getSkipSegments, SegmentItem } from '@service/sponsor-block.service';
-import { getDevice, toBvid, ungzip } from '@/utils';
+import { getDevice, toBvid } from '@/utils';
+import { ungzip } from '@/utils/gzip';
 import { protobufReadOptions, protobufWriteOptions } from '@/utils/protobuf';
 import { Middleware } from './middleware';
 
@@ -171,6 +172,7 @@ function handleChronos(chronos: Chronos, headers: Record<string, string>): void 
     chronos.md5 = processedMd5;
     chronos.file = `https://raw.githubusercontent.com/kokoryh/chronos/refs/heads/master/${processedMd5}.zip`;
     chronos.sign = undefined;
+    Logger.info(`[Chronos] Replacement selected: ${processedMd5}; resource=${chronos.file}`);
 }
 
 function getChronosMd5Map(): Record<string, string> {

@@ -40,6 +40,7 @@ async function run(): Promise<{ body?: Uint8Array }> {
     }
     // Validate the original response before contacting any third-party service.
     const reply = DmSegMobileReply.fromBinary(unpackFrame(response.body as Uint8Array), protobufReadOptions);
+    log(2, `Danmaku decoded: ${reply.elems.length} original entries; compressed=${(response.body as Uint8Array)[0]}.`);
     const settings = parseSettings(typeof $argument === 'string' ? $argument : undefined);
     if (Object.values(settings.modes).every(mode => mode === 'off')) {
         log(2, 'All category policies are off.');

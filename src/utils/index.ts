@@ -73,8 +73,3 @@ export function getDevice(): string {
     }
     return device;
 }
-
-export function ungzip(data: Uint8Array): Uint8Array {
-    return $utils.ungzip(data);
-    // return typeof $utils !== 'undefined' ? $utils.ungzip(data) : gunzipSync(data);
-}

@@ -1,4 +1,4 @@
-import { ungzip } from '@/utils';
+import { ungzip } from '@/utils/gzip';
 import { DefaultState, DefaultArgument } from '@/types/context';
 import { Context } from './context';
 import { Logger } from './logger';

@@ -53,7 +53,7 @@ export interface Utils {
     geoip: (ip: string) => string;
     ipasn: (ip: string) => string;
     ipaso: (ip: string) => string;
-    ungzip: (binary: Uint8Array) => Uint8Array;
+    ungzip: (binary: Uint8Array) => Uint8Array | null;
 }
 
 export interface Notification {

@@ -262,6 +262,106 @@ test('diagnostics identify missing correlation and respect ERROR/OFF without cha
     assert.equal(unpaired.calls, 0);
 });
 
+test('compressed hints survive native ungzip null/throw and offset-sensitive bridges', async () => {
+    for (const failure of ['null', 'throw', 'offset']) {
+        const store = new Map<string, string>();
+        await prepare(store);
+        const body = frame(originalReply().subarray(5), true);
+        const out = await execute(
+            'bilibili.sponsor.response',
+            { id: 'request-1' },
+            { status: 200, headers: {}, body },
+            store,
+            (_, cb) =>
+                cb(
+                    null,
+                    { status: 200 },
+                    JSON.stringify([{ category: 'sponsor', actionType: 'skip', segment: [5, 7] }])
+                ),
+            '{"logLevel":2}',
+            {
+                $utils: {
+                    ungzip: (payload: Uint8Array) => {
+                        if (failure === 'throw') throw new Error('native gzip failure');
+                        if (
+                            failure === 'null' ||
+                            payload.byteOffset !== 0 ||
+                            payload.buffer.byteLength !== payload.length
+                        )
+                            return null;
+                        return new Uint8Array(gunzipSync(payload));
+                    },
+                },
+            }
+        );
+        const decoded = DmSegMobileReply.fromBinary(out.result.body.subarray(5));
+        assert.equal(decoded.elems[0].content, '原始弹幕🙂', failure);
+        assert.equal(UnknownFieldHandler.list(decoded).length, 1, failure);
+        assert.ok(
+            decoded.elems.some(item => item.content === '空指部已就位'),
+            failure
+        );
+        assert.ok(
+            out.logs.some(line => /Danmaku decoded.*compressed=1/.test(line)),
+            failure
+        );
+    }
+});
+
+test('compressed Chronos metadata is replaced when native ungzip returns null', async () => {
+    const progress = ViewProgressReply.create({
+        chronos: { md5: '3a14beddd23328eaddfe9f0eb048d713', file: 'original', sign: 'original' },
+    });
+    const out = await execute(
+        'bilibili.protobuf.response',
+        {
+            url: 'https://grpc.biliapi.net/bilibili.app.view.v1.View/ViewProgress',
+            method: 'POST',
+            headers: { 'user-agent': 'bili-inter' },
+        },
+        { status: 200, headers: {}, body: frame(ViewProgressReply.toBinary(progress), true) },
+        new Map(),
+        undefined,
+        '{"sponsorBlock":"bilibili.sponsor","logLevel":2}',
+        { $utils: { ungzip: () => null } }
+    );
+    const decoded = ViewProgressReply.fromBinary(out.result.body.subarray(5));
+    assert.ok(decoded.chronos?.file.endsWith('8c3feda2e92bf60e8a7aeade1a231586.zip'));
+    assert.ok(out.logs.some(line => line.includes('[Chronos] Replacement selected')));
+});
+
+test('corrupt gzip and oversized decoded bodies pass through before any segment lookup', async () => {
+    for (const problem of ['crc', 'size', 'too-small', 'truncated']) {
+        const store = new Map<string, string>();
+        await prepare(store);
+        let body = frame(originalReply().subarray(5), true);
+        if (problem === 'crc') body[body.length - 8] ^= 1;
+        if (problem === 'size') new DataView(body.buffer).setUint32(body.length - 4, 4 * 1024 * 1024 + 1, true);
+        if (problem === 'too-small') new DataView(body.buffer).setUint32(body.length - 4, 1, true);
+        if (problem === 'truncated') {
+            body = body.slice(0, 10);
+            new DataView(body.buffer).setUint32(1, body.length - 5);
+        }
+        const snapshot = body.slice();
+        const out = await execute(
+            'bilibili.sponsor.response',
+            { id: 'request-1' },
+            { status: 200, headers: {}, body },
+            store,
+            undefined,
+            '{}',
+            { $utils: { ungzip: () => null } }
+        );
+        assert.equal(out.calls, 0, problem);
+        assert.equal(Object.keys(out.result).length, 0, problem);
+        assert.deepEqual(body, snapshot, problem);
+        assert.ok(
+            out.logs.some(line => line.includes('Original response preserved')),
+            problem
+        );
+    }
+});
+
 test('the reported video maps its large aid to the correct BV and injects the recorded sponsor in chunk two', async () => {
     // Public API snapshot taken during diagnosis; no live service dependency.
     const store = new Map<string, string>();

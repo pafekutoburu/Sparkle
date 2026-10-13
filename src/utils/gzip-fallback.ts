@@ -1,0 +1,1 @@
+export { gunzipSync } from 'fflate';
