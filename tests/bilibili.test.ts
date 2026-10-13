@@ -522,13 +522,44 @@ test('dedicated Chronos keeps upstream resource fallback and legacy-only enablin
     }
 });
 
+test('resource replacement can be bypassed without disabling the helper or changing response bytes/headers', async () => {
+    for (const helper of ['sponsorBlock', 'sponsorBlockLegacy']) {
+        const body = frame(
+            ViewProgressReply.toBinary(ViewProgressReply.create({
+                chronos: { md5: '3a14beddd23328eaddfe9f0eb048d713', file: 'original', sign: 'original' },
+            })),
+            true
+        );
+        const snapshot = body.slice();
+        const headers = { 'content-type': 'application/grpc' };
+        let decompressCalls = 0;
+        const out = await execute(
+            'bilibili.chronos',
+            { headers: { te: 'trailers' } },
+            { status: 200, headers, body },
+            new Map(),
+            undefined,
+            JSON.stringify({ sponsorBlock: '#', sponsorBlockLegacy: '#', [helper]: 'enabled', chronosEnabled: '0', logLevel: 2 }),
+            { TextEncoder, TextDecoder, $utils: { ungzip: () => { decompressCalls++; return null; } } }
+        );
+        assert.equal(Object.keys(out.result).length, 0);
+        assert.deepEqual(body, snapshot);
+        assert.deepEqual(headers, { 'content-type': 'application/grpc' });
+        assert.equal(decompressCalls, 0);
+        assert.equal(out.calls, 0);
+        assert.ok(out.logs.some(line => line.includes('Resource replacement disabled')));
+        assert.ok(!out.logs.some(line => line.includes('Replacement selected')));
+    }
+});
+
 test('Chronos module uses a dedicated WebView bundle without changing the ordinary JSC path', () => {
     const module = readFileSync(new URL('../release/surge/module/bilibili.sgmodule', import.meta.url), 'utf8');
     const lines = module.split('\n').filter(line => line.includes('.chronos = type=http-response'));
     assert.equal(lines.length, 2);
     for (const line of lines) {
         assert.ok(line.includes('engine=webview'));
-        assert.ok(line.includes('dist/bilibili.chronos.js?v=7'));
+        assert.ok(line.includes('dist/bilibili.chronos.js?v=8'));
+        assert.ok(line.includes('"chronosEnabled":"{{{空降资源替换}}}"'));
         assert.ok(!line.includes('bilibili.protobuf.response.js'));
     }
     const ordinary = module.split('\n').find(line => line.startsWith('{{{资料净化}}} ='))!;
@@ -819,6 +850,7 @@ test('module defaults restore optional request handling; both helpers have indep
     assert.ok(argumentsLine.includes('优化评论区加载:#'));
     assert.ok(argumentsLine.includes('空降助手:bilibili.sponsor'));
     assert.ok(argumentsLine.includes('空降助手（旧）:#'));
+    assert.ok(argumentsLine.includes('空降资源替换:1'));
     assert.ok(module.includes('{{{空降助手}}}.request'));
     assert.ok(module.includes('{{{空降助手}}}.response'));
     assert.ok(module.includes('{{{空降助手（旧）}}} = type=http-request'));

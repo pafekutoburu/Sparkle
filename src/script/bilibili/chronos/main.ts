@@ -24,6 +24,10 @@ function run(): Surge.HttpResponseDone {
     Logger.setLevel(String(argument.logLevel ?? 4));
     const enabled = (value: unknown) => Boolean(value && value !== '#');
     if (!enabled(argument.sponsorBlock ?? true) && !enabled(argument.sponsorBlockLegacy)) return {};
+    if (String(argument.chronosEnabled ?? 1) === '0') {
+        Logger.info('[Chronos] Resource replacement disabled; original response preserved.');
+        return {};
+    }
     if (response.status !== 200) return {};
     const status = Object.entries(response.h2_trailers ?? response.headers).find(
         ([key]) => key.toLowerCase() === 'grpc-status'
