@@ -623,13 +623,13 @@ test('Chronos module uses a dedicated WebView bundle without changing the ordina
     assert.equal(lines.length, 2);
     for (const line of lines) {
         assert.ok(line.includes('engine=webview'));
-        assert.ok(line.includes('dist/bilibili.chronos.js?v=10'));
+        assert.ok(line.includes('dist/bilibili.chronos.js?v=11'));
         assert.ok(line.includes('"chronosEnabled":"{{{空降资源替换}}}"'));
         assert.ok(!line.includes('bilibili.protobuf.response.js'));
     }
     const ordinary = module.split('\n').find(line => line.startsWith('{{{资料净化}}} ='))!;
     assert.ok(ordinary.includes('engine=jsc'));
-    assert.ok(ordinary.includes('dist/bilibili.protobuf.response.js?v=6'));
+    assert.ok(ordinary.includes('dist/bilibili.protobuf.response.js?v=11'));
     const bundle = source('bilibili.chronos');
     assert.ok(!bundle.includes('bilibili.main.community.reply.v1.MainListReply'));
     assert.ok(!bundle.includes('bilibili.community.service.dm.v1.DanmakuElem'));
@@ -715,7 +715,7 @@ test('ordinary compressed RPC purification remains available when native gzip su
     assert.equal(decoded.topReplies[0].content?.message, '保留中文🙂');
 });
 
-test('corrupt gzip and oversized decoded bodies pass through before any segment lookup', async () => {
+test('corrupt gzip never reaches injection; oversized and truncated frames skip lookup', async () => {
     for (const problem of ['crc', 'size', 'too-small', 'truncated']) {
         const store = new Map<string, string>();
         await prepare(store);
@@ -733,11 +733,13 @@ test('corrupt gzip and oversized decoded bodies pass through before any segment 
             { id: 'request-1' },
             { status: 200, headers: {}, body },
             store,
-            undefined,
+            (_, cb) => cb(null, { status: 200 }, JSON.stringify([
+                { category: 'sponsor', actionType: 'skip', segment: [5, 7] },
+            ])),
             '{}',
             { $utils: { ungzip: () => null } }
         );
-        assert.equal(out.calls, 0, problem);
+        assert.equal(out.calls, ['size', 'truncated'].includes(problem) ? 0 : 1, problem);
         assert.equal(Object.keys(out.result).length, 0, problem);
         assert.deepEqual(body, snapshot, problem);
         assert.ok(
@@ -1012,4 +1014,137 @@ test('overlapping automatic ranges seek beyond their union; manual highlights re
     const highlight = decoded.elems.find(item => item.content.includes('精彩时刻'));
     assert.equal(highlight?.action, 'airborne:30000');
     assert.ok(highlight?.content.includes('点按跳转'));
+});
+
+test('large danmaku replies retain exact original bytes and field order while appending only hints', async () => {
+    const encoded = DmSegMobileReply.toBinary(DmSegMobileReply.create({
+        elems: Array.from({ length: 10_000 }, (_, index) => ({
+            id: String(index + 1), idStr: String(index + 1), progress: index, content: `原始弹幕🙂 ${index}`,
+        })),
+    }));
+    const original = new Uint8Array(encoded.length + 3);
+    original.set([0xa0, 0x06, 42]); // Unknown field before known fields.
+    original.set(encoded, 3);
+    for (const compressed of [false, true]) {
+        const store = new Map<string, string>();
+        await prepare(store);
+        const headers = { 'grpc-encoding': 'gzip' };
+        const out = await execute('bilibili.sponsor.response', { id: 'request-1' },
+            { status: 200, headers, body: frame(original, compressed) }, store,
+            (_, cb) => cb(null, { status: 200 }, JSON.stringify([
+                { category: 'sponsor', actionType: 'skip', segment: [5, 7] },
+            ])));
+        assert.deepEqual(out.result.body.subarray(5, original.length + 5), original);
+        const decoded = DmSegMobileReply.fromBinary(out.result.body.subarray(5));
+        assert.equal(decoded.elems.length, 10_002);
+        assert.equal(decoded.elems[9999].content, '原始弹幕🙂 9999');
+        assert.equal(UnknownFieldHandler.list(decoded).length, 1);
+        assert.equal(out.result.headers, undefined);
+        assert.deepEqual(headers, { 'grpc-encoding': 'gzip' });
+    }
+});
+
+test('no-hint paths and the segment query never decompress the original response', async () => {
+    for (const scenario of ['off', '404', 'cached-empty', 'later-chunk', 'query-wait']) {
+        const store = new Map<string, string>();
+        await prepare(store);
+        if (scenario === 'cached-empty') {
+            const saved = JSON.parse(store.get('sparkle.sponsor.v1')!);
+            saved.cache['https://www.bsbsb.top|BV17x411w7KC|279786'] = { segments: [], expires: Date.now() + 60_000 };
+            store.set('sparkle.sponsor.v1', JSON.stringify(saved));
+        }
+        let decompressCalls = 0;
+        const arg = scenario === 'off' ? JSON.stringify(Object.fromEntries(Object.keys(categories).map(k => [k, 'off']))) : '{}';
+        const out = await execute('bilibili.sponsor.response', { id: 'request-1' },
+            { status: 200, headers: {}, body: frame(originalReply().subarray(5), true) }, store,
+            (_, cb) => {
+                assert.equal(decompressCalls, 0, 'No decoded buffer may be retained during lookup');
+                setImmediate(() => cb(null, { status: scenario === '404' ? 404 : 200 }, JSON.stringify(
+                    scenario === 'later-chunk' ? [{ category: 'sponsor', actionType: 'skip', segment: [400, 410] }] : []
+                )));
+            }, arg, { $utils: { ungzip: () => { decompressCalls++; throw new Error('unnecessary decompression'); } } });
+        assert.equal(decompressCalls, 0, scenario);
+        assert.equal(Object.keys(out.result).length, 0);
+        assert.equal(out.calls, ['off', 'cached-empty'].includes(scenario) ? 0 : 1);
+    }
+});
+
+test('invalid outer protobuf lengths remain untouched when a hint would be appended', async () => {
+    const store = new Map<string, string>();
+    await prepare(store);
+    const body = frame(new Uint8Array([0x0a, 0x7f, 0]));
+    const out = await execute('bilibili.sponsor.response', { id: 'request-1' },
+        { status: 200, headers: {}, body }, store,
+        (_, cb) => cb(null, { status: 200 }, JSON.stringify([{ category: 'sponsor', actionType: 'skip', segment: [5, 7] }])));
+    assert.equal(Object.keys(out.result).length, 0);
+    assert.deepEqual(body, frame(new Uint8Array([0x0a, 0x7f, 0])));
+});
+
+test('cache size stays bounded across many videos, and old oversized/corrupt stores self-reset', async () => {
+    for (const raw of [JSON.stringify({ pending: {}, cache: {}, oversized: 'x'.repeat(70_000) }), 'null', '{"pending":[],"cache":[]}']) {
+        const store = new Map([['sparkle.sponsor.v1', raw]]);
+        await prepare(store);
+        assert.ok(store.get('sparkle.sponsor.v1')!.length <= 65_536);
+        assert.ok(JSON.parse(store.get('sparkle.sponsor.v1')!).pending['request-1']);
+    }
+    const store = new Map<string, string>();
+    for (let video = 0; video < 40; video++) {
+        await prepare(store, 'request-1', String(video + 1));
+        await execute('bilibili.sponsor.response', { id: 'request-1' },
+            { status: 200, headers: {}, body: originalReply() }, store,
+            (_, cb) => cb(null, { status: 200 }, JSON.stringify(Array.from({ length: 200 }, (_, i) => ({
+                UUID: `${video}-${i}`, category: 'sponsor', actionType: 'skip', segment: [400 + i, 401 + i],
+            })))));
+        assert.ok(store.get('sparkle.sponsor.v1')!.length <= 65_536);
+    }
+    const saved = JSON.parse(store.get('sparkle.sponsor.v1')!);
+    assert.ok(Object.keys(saved.cache).length < 32);
+    assert.ok(saved.cache['https://www.bsbsb.top|BV17x411w7KC|40']);
+});
+
+test('oversized segment responses and IDs preserve the original without unbounded cache growth', async () => {
+    const store = new Map<string, string>();
+    await prepare(store);
+    const out = await execute('bilibili.sponsor.response', { id: 'request-1' },
+        { status: 200, headers: {}, body: originalReply() }, store,
+        (_, cb) => cb(null, { status: 200 }, ' '.repeat(131_073)));
+    assert.equal(Object.keys(out.result).length, 0);
+    assert.deepEqual(JSON.parse(store.get('sparkle.sponsor.v1')!).cache, {});
+    assert.deepEqual(parseSegments([{ UUID: 'x'.repeat(129), category: 'sponsor', actionType: 'skip', segment: [1, 2] }], ''), []);
+});
+
+test('all protobuf/Chronos entry points reject large inflated payloads before native decompression', async () => {
+    const payload = new Uint8Array(1024 * 1024 + 1);
+    for (const [bundle, url] of [
+        ['bilibili.protobuf.response', 'https://grpc.biliapi.net/bilibili.app.show.v1.Popular/Index'],
+        ['bilibili.chronos', 'https://grpc.biliapi.net/bilibili.app.view.v1.View/ViewProgress'],
+    ]) {
+        let native = 0;
+        const out = await execute(bundle, { url, headers: {}, method: 'POST' },
+            { status: 200, headers: {}, body: frame(payload, true) }, new Map(), undefined, '{}',
+            { TextEncoder, TextDecoder, $utils: { ungzip: () => { native++; return payload; } } });
+        assert.equal(native, 0, bundle);
+        assert.equal(Object.keys(out.result).length, 0, bundle);
+    }
+});
+
+test('already replaced Chronos resources bypass recompression and retain the original response', async () => {
+    const value = ViewProgressReply.create({ chronos: {
+        md5: '8c3feda2e92bf60e8a7aeade1a231586',
+        file: 'https://raw.githubusercontent.com/kokoryh/chronos/refs/heads/master/8c3feda2e92bf60e8a7aeade1a231586.zip',
+    } });
+    const out = await execute('bilibili.chronos',
+        { url: 'https://grpc.biliapi.net/bilibili.app.view.v1.View/ViewProgress', headers: { 'user-agent': 'bili-inter' } },
+        { status: 200, headers: {}, body: frame(ViewProgressReply.toBinary(value), true) },
+        new Map(), undefined, '{}', { TextEncoder, TextDecoder });
+    assert.equal(Object.keys(out.result).length, 0);
+});
+
+test('every module response script has a finite buffering limit', () => {
+    const module = readFileSync(new URL('../release/surge/module/bilibili.sgmodule', import.meta.url), 'utf8');
+    const scripts = module.split('\n').filter(line => line.includes('= type=http-response,'));
+    for (const line of scripts) {
+        const max = Number(/max-size=(\d+)/.exec(line)?.[1]);
+        assert.ok(max > 0 && max <= 1024 * 1024, line.split(' =')[0]);
+    }
 });

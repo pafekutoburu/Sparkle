@@ -1,8 +1,17 @@
 import * as Surge from '@/types/surge';
 import { DmSegMobileReply } from '@proto/bilibili/community/service/dm/v1/dm';
-import { protobufReadOptions, protobufWriteOptions } from '@/utils/protobuf';
+import { protobufWriteOptions } from '@/utils/protobuf';
 import { parseSettings, parseSegments, Segment } from '../policy';
-import { readStore, writeStore, unpackFrame, packFrame, makeDanmaku, log } from '../shared';
+import {
+    readStore,
+    writeStore,
+    validateFrame,
+    unpackFrame,
+    packFrame,
+    countDanmaku,
+    makeDanmaku,
+    log,
+} from '../shared';
 
 const request = $request as Surge.HttpRequest;
 const response = $response as Surge.HttpResponse;
@@ -38,19 +47,19 @@ async function run(): Promise<{ body?: Uint8Array }> {
         log(4, `Bilibili gRPC status ${status}; original response preserved.`);
         return {};
     }
-    // Validate the original response before contacting any third-party service.
-    const reply = DmSegMobileReply.fromBinary(unpackFrame(response.body as Uint8Array), protobufReadOptions);
-    log(2, `Danmaku decoded: ${reply.elems.length} original entries; compressed=${(response.body as Uint8Array)[0]}.`);
     const settings = parseSettings(typeof $argument === 'string' ? $argument : undefined);
     if (Object.values(settings.modes).every(mode => mode === 'off')) {
         log(2, 'All category policies are off.');
         return {};
     }
+    // Only inspect framing and the advertised gzip size before an async query.
+    // Do not retain a decoded buffer or thousands of danmaku objects while waiting.
+    validateFrame(response.body as Uint8Array);
     const key = `${settings.server}|${metadata.bvid}|${metadata.cid}`;
     let segments: Segment[];
     const cached = store.cache[key];
     if (cached) {
-        segments = cached.segments;
+        segments = parseSegments(cached.segments, metadata.cid);
         log(2, `Segment cache hit: ${segments.length} valid segments.`);
     } else {
         const fetched = await new Promise<{ status: number; body: string }>((resolve, reject) => {
@@ -61,8 +70,12 @@ async function run(): Promise<{ body?: Uint8Array }> {
                     policy: settings.policy,
                     timeout: 1.5,
                 },
-                (error, response, body) =>
-                    error ? reject(error) : resolve({ status: response.status, body: String(body) })
+                (error, response, body) => {
+                    if (error) return reject(error);
+                    if (typeof body !== 'string' || body.length > 131_072)
+                        return reject(new Error('Segment response exceeds memory budget or is not text'));
+                    resolve({ status: response.status, body });
+                }
             );
         });
         if (fetched.status === 404) segments = [];
@@ -85,9 +98,14 @@ async function run(): Promise<{ body?: Uint8Array }> {
         );
         return {};
     }
+    // Protobuf repeated message fields merge when their wire bytes are appended.
+    // Preserve original strings, unknown fields and ordering without decoding them.
+    const payload = unpackFrame(response.body as Uint8Array);
+    const count = countDanmaku(payload);
+    log(2, `Danmaku decoded: ${count} original entries (wire scan); compressed=${(response.body as Uint8Array)[0]}.`);
     log(2, `Injecting ${elems.length} hints for chunk ${metadata.index}.`);
-    reply.elems.push(...elems);
-    return { body: packFrame(DmSegMobileReply.toBinary(reply, protobufWriteOptions)) };
+    const extra = DmSegMobileReply.toBinary(DmSegMobileReply.create({ elems }), protobufWriteOptions);
+    return { body: packFrame(payload, extra) };
 }
 
 run()

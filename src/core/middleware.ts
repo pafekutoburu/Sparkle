@@ -1,4 +1,4 @@
-import { ungzip } from '@/utils/gzip';
+import { ungzip, gzipSize } from '@/utils/gzip';
 import { DefaultState, DefaultArgument } from '@/types/context';
 import { Context } from './context';
 import { Logger } from './logger';
@@ -43,8 +43,18 @@ export const parseJSONResponse: Middleware = async (ctx, next) => {
 
 export const parseGRPCResponse: Middleware = async (ctx, next) => {
     let body = ctx.response.bodyBytes;
+    const maxPayload = 1024 * 1024;
+    if (
+        !(body instanceof Uint8Array) ||
+        body.length < 5 ||
+        body.length > maxPayload + 5 ||
+        body[0] > 1 ||
+        new DataView(body.buffer, body.byteOffset, body.byteLength).getUint32(1) !== body.length - 5
+    )
+        exit();
     const payload = body.subarray(5);
     if (body[0]) {
+        gzipSize(payload, maxPayload);
         // Portable fallback is needed for airborne data and Chronos only.
         // Ordinary feed/detail/comment/playback responses keep the previously
         // verified native-only path; don't make every large response use JS.
@@ -52,11 +62,12 @@ export const parseGRPCResponse: Middleware = async (ctx, next) => {
             /\/bilibili\.(?:app\.view(?:unite)?\.v1\.View\/ViewProgress|community\.service\.dm\.v1\.DM\/DmSegMobile)$/.test(
                 ctx.request.url
             );
-        const decoded = airborne ? ungzip(payload) : $utils.ungzip(payload);
+        const decoded = airborne ? ungzip(payload, maxPayload) : $utils.ungzip(payload);
         if (!(decoded instanceof Uint8Array)) {
             Logger.warn('[Protobuf] Native gzip unavailable; purification bypassed.');
             exit();
         }
+        if (decoded.length > maxPayload) exit();
         ctx.response.bodyBytes = decoded;
     } else {
         ctx.response.bodyBytes = payload;

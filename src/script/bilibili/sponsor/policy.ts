@@ -63,6 +63,7 @@ export function parseSegments(input: unknown, cid: string): Segment[] {
         )
             continue;
         const id = String(item.UUID || `${item.category}:${start}:${end}`);
+        if (id.length > 128) continue;
         if (seen.has(id)) continue;
         seen.add(id);
         result.push({ UUID: id, category: item.category, actionType: item.actionType, segment: [start, end] });

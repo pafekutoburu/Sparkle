@@ -37,22 +37,25 @@ function run(): Surge.HttpResponseDone {
 
     const frame = response.body;
     if (!(frame instanceof Uint8Array) || frame.length < 5) throw new Error('Missing gRPC frame');
+    if (frame.length > 1024 * 1024 + 5) throw new Error('Chronos body exceeds memory budget');
     if (
         frame[0] > 1 ||
         new DataView(frame.buffer, frame.byteOffset, frame.byteLength).getUint32(1) !== frame.length - 5
     )
         throw new Error('Unsupported gRPC frame');
-    const payload = frame[0] ? ungzip(frame.subarray(5)) : frame.subarray(5);
+    const payload = frame[0] ? ungzip(frame.subarray(5), 1024 * 1024) : frame.subarray(5);
     const reader = new BinaryReader(payload);
     const parts: Uint8Array[] = [];
+    let copyStart = 0;
     let changed = false;
-    Logger.info(`[Chronos] Start; frame_bytes=${frame.length}; engine=webview; resource_mode=${resourceMode}; compressed=${frame[0]}; trailers_present=${response.h2_trailers !== undefined}`);
+    Logger.info(
+        `[Chronos] Start; frame_bytes=${frame.length}; engine=webview; resource_mode=${resourceMode}; compressed=${frame[0]}; trailers_present=${response.h2_trailers !== undefined}`
+    );
     while (reader.pos < reader.len) {
         const start = reader.pos;
         const [field, wireType] = reader.tag();
         if (field !== 2 || wireType !== 2) {
             reader.skip(wireType);
-            parts.push(payload.subarray(start, reader.pos));
             continue;
         }
         const chronos = Chronos.fromBinary(reader.bytes());
@@ -64,16 +67,26 @@ function run(): Surge.HttpResponseDone {
             const ua = request.headers['user-agent'] || request.headers['User-Agent'] || '';
             const edition = ua.includes('bili-hd') ? 'hd' : ua.includes('bili-inter') ? 'inter' : 'universal';
             const md5 = replacements[chronos.md5] || replacements[edition];
-            if (!replacements[chronos.md5]) Logger.warn(`[Chronos] Unknown source MD5 ${chronos.md5}; fallback=${edition}`);
+            const file = `https://raw.githubusercontent.com/kokoryh/chronos/refs/heads/master/${md5}.zip`;
+            if (chronos.md5 === md5 && chronos.file === file && !chronos.sign) {
+                continue;
+            }
+            if (!replacements[chronos.md5])
+                Logger.warn(`[Chronos] Unknown source MD5 ${chronos.md5}; fallback=${edition}`);
             chronos.md5 = md5;
-            chronos.file = `https://raw.githubusercontent.com/kokoryh/chronos/refs/heads/master/${md5}.zip`;
+            chronos.file = file;
             chronos.sign = undefined;
             Logger.info(`[Chronos] Replacement selected: ${md5}; resource=${chronos.file}`);
         }
+        // Keep consecutive untouched fields in one view instead of retaining a
+        // separate typed-array object for every field in a large response.
+        if (start > copyStart) parts.push(payload.subarray(copyStart, start));
         parts.push(new BinaryWriter().tag(2, 2).bytes(Chronos.toBinary(chronos)).finish());
+        copyStart = reader.pos;
         changed = true;
     }
     if (!changed) return {};
+    if (copyStart < payload.length) parts.push(payload.subarray(copyStart));
     const length = parts.reduce((sum, part) => sum + part.length, 0);
     const rewritten = new Uint8Array(length);
     let offset = 0;
@@ -92,7 +105,9 @@ function run(): Surge.HttpResponseDone {
     body.set(encoded, 5);
     // Leave HTTP headers and the original HTTP/2 completion metadata to Surge.
     // An absent scripting trailer field does not establish a missing trailer.
-    Logger.info(`[Chronos] Transport output: compressed=${body[0]}; original headers retained; grpc-status not synthesized.`);
+    Logger.info(
+        `[Chronos] Transport output: compressed=${body[0]}; original headers retained; grpc-status not synthesized.`
+    );
     return { body };
 }
 
